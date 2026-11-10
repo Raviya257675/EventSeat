@@ -1,33 +1,64 @@
+
 package com.eventseat.util;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.io.InputStream;
+import java.io.IOException;
+import java.util.Properties;
 
 public class DatabaseConnection {
 
-    private static final String URL =
-            "jdbc:mysql://localhost:3306/eventseat_db";
+    private static final Properties properties =
+            new Properties();
 
-    private static final String USER =
-            "root";
+    static {
 
-    private static final String PASSWORD =
-            System.getenv("EVENTSEAT_DB_PASSWORD");
+        try (InputStream input =
+                     DatabaseConnection.class
+                             .getClassLoader()
+                             .getResourceAsStream("db.properties")) {
+
+            if (input == null) {
+                throw new IllegalStateException(
+                        "db.properties file not found!"
+                );
+            }
+
+            properties.load(input);
+
+        } catch (IOException e) {
+
+            throw new ExceptionInInitializerError(e);
+        }
+    }
 
     public static Connection getConnection()
             throws SQLException {
 
-        if (PASSWORD == null || PASSWORD.isBlank()) {
+        String url =
+                properties.getProperty("db.url");
+
+        String username =
+                properties.getProperty("db.username");
+
+        String password =
+                properties.getProperty("db.password");
+
+        if (url == null || username == null
+                || password == null
+                || password.isBlank()) {
+
             throw new SQLException(
-                    "EVENTSEAT_DB_PASSWORD environment variable is not set."
+                    "Database configuration is incomplete."
             );
         }
 
         return DriverManager.getConnection(
-                URL,
-                USER,
-                PASSWORD
+                url,
+                username,
+                password
         );
     }
 }
