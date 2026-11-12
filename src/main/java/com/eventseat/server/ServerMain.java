@@ -12,8 +12,8 @@ public class ServerMain {
 
         EventManager eventManager = new EventManager();
 
-        try {
-            ServerSocket serverSocket = new ServerSocket(port);
+        Runtime.getRuntime().addShutdownHook(new Thread(eventManager::close));
+        try (ServerSocket serverSocket = new ServerSocket(port)) {
 
             System.out.println("EventSeat Server Started");
             System.out.println("Listening on port " + port);
@@ -40,6 +40,8 @@ public class ServerMain {
 
         } catch (IOException e) {
             e.printStackTrace();
+        } finally {
+            eventManager.close();
         }
     }
 }

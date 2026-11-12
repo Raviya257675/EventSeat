@@ -11,6 +11,12 @@ import java.util.function.Consumer;
 
 public class ServerConnection {
 
+    private final java.util.concurrent.ExecutorService sender =
+            java.util.concurrent.Executors.newSingleThreadExecutor(task -> {
+                Thread thread = new Thread(task, "eventseat-sender");
+                thread.setDaemon(true);
+                return thread;
+            });
     private Socket socket;
     private PrintWriter writer;
 
@@ -113,7 +119,10 @@ public class ServerConnection {
 
             while ((message = reader.readLine()) != null) {
 
-                messageHandler.accept(message);
+                synchronized (lock) {
+                    if (socket != activeSocket) return;
+                    messageHandler.accept(message);
+                }
             }
 
         } catch (IOException e) {
@@ -195,21 +204,13 @@ public class ServerConnection {
             activeWriter = writer;
         }
 
-        boolean failed;
-
-        synchronized (activeWriter) {
-
+        sender.execute(() -> {
+            synchronized (lock) {
+                if (socket != activeSocket) return;
+            }
             activeWriter.println(message);
-            failed = activeWriter.checkError();
-        }
-
-        if (failed) {
-
-            handleDisconnection(activeSocket);
-
-            return false;
-        }
-
+            if (activeWriter.checkError()) handleDisconnection(activeSocket);
+        });
         return true;
     }
 
@@ -243,10 +244,7 @@ public class ServerConnection {
             writer = null;
         }
 
-        if (activeWriter != null) {
-
-            activeWriter.println("EXIT");
-        }
+        // Closing the socket releases holds even if an outbound write is blocked.
 
         if (activeSocket != null) {
 

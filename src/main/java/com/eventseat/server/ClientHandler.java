@@ -22,6 +22,14 @@ public class ClientHandler extends Thread {
 
     private volatile PrintWriter writer;
     private volatile String subscribedEventId;
+    private final java.util.concurrent.BlockingQueue<String> outgoing =
+            new java.util.concurrent.ArrayBlockingQueue<>(512);
+
+    private void send(String message) {
+        if (!outgoing.offer(message)) {
+            try { socket.close(); } catch (IOException ignored) { }
+        }
+    }
 
     private static final List<ClientHandler> clients =
             new CopyOnWriteArrayList<>();
@@ -34,36 +42,66 @@ public class ClientHandler extends Thread {
     @Override
     public void run() {
 
-        try (Socket client = socket;
-             BufferedReader reader = new BufferedReader(
-                     new InputStreamReader(client.getInputStream()));
-             PrintWriter output = new PrintWriter(
-                     client.getOutputStream(), true)) {
+        // Close the socket first, so a blocked sender cannot delay hold cleanup.
+        try (Socket client = socket) {
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(client.getInputStream()));
+            PrintWriter output = new PrintWriter(client.getOutputStream(), true);
 
             writer = output;
+            Thread sender = new Thread(() -> {
+                try {
+                    while (!socket.isClosed()) {
+                        String next = outgoing.poll(1, java.util.concurrent.TimeUnit.SECONDS);
+                        if (next != null) {
+                            output.println(next);
+                            if (output.checkError()) { socket.close(); break; }
+                            if (next.equals("Goodbye!")) break;
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (IOException ignored) { }
+            }, "eventseat-client-writer");
+            sender.setDaemon(true);
+            sender.start();
             clients.add(this);
-
-            System.out.println(
-                    "Client connected. Total clients: " + clients.size()
-            );
-
             String message;
-
             while ((message = reader.readLine()) != null) {
-
+                message = message.trim();
                 if (message.equalsIgnoreCase("EXIT")) {
-                    output.println("Goodbye!");
+                    eventManager.releaseOwner(this);
+                    send("Goodbye!");
+                    // Give the queued farewell a bounded opportunity to flush.
+                    try { sender.join(250); }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); }
                     break;
-                }
-
-                if (message.equalsIgnoreCase("GET_EVENTS")) {
+                } else if (message.startsWith("HOLD:") || message.startsWith("RELEASE:")) {
+                    String[] parts = message.split(":", -1);
+                    if (parts.length != 3 || parts[1].isBlank() || parts[2].isBlank()) {
+                        send("INVALID_HOLD_REQUEST");
+                        continue;
+                    }
+                    synchronized (eventManager) {
+                        send(parts[0].equals("HOLD")
+                                ? eventManager.holdSeat(parts[1], parts[2], this)
+                                : eventManager.releaseSeat(parts[1], parts[2], this));
+                    }
+                } else if (message.equals("LEAVE_SEATS")) {
+                    synchronized (eventManager) {
+                        subscribedEventId = null;
+                        eventManager.releaseOwner(this);
+                        send("LEAVE_SUCCESS");
+                    }
+                } else if (message.equalsIgnoreCase("GET_EVENTS")) {
+                    eventManager.releaseOwner(this);
 
                     subscribedEventId = null;
-                    output.println(eventManager.getEvents());
+                    send(eventManager.getEvents());
 
                 } else if (message.equalsIgnoreCase("GET_EVENT")) {
 
-                    output.println(
+                    send(
                             eventManager.getEventDetails("E001")
                     );
 
@@ -79,6 +117,7 @@ public class ClientHandler extends Thread {
 
                     synchronized (eventManager) {
 
+                        if (!eventId.equals(subscribedEventId)) eventManager.releaseOwner(this);
                         String seats =
                                 eventManager.getSeatStatus(eventId);
 
@@ -86,7 +125,7 @@ public class ClientHandler extends Thread {
                                 seats.startsWith("SEATS:")
                                         ? eventId : null;
 
-                        output.println(seats);
+                        send(seats);
                     }
 
                 } else if (message.startsWith("GET_BOOKING:")) {
@@ -97,7 +136,7 @@ public class ClientHandler extends Thread {
                             parts[2].isBlank() ||
                             parts[2].length() > 100) {
 
-                        output.println("INVALID_BOOKING_REQUEST");
+                        send("INVALID_BOOKING_REQUEST");
                         continue;
                     }
 
@@ -107,11 +146,11 @@ public class ClientHandler extends Thread {
                                 Integer.parseInt(parts[1]);
 
                         if (bookingId <= 0) {
-                            output.println("INVALID_BOOKING_REQUEST");
+                            send("INVALID_BOOKING_REQUEST");
                             continue;
                         }
 
-                        output.println(
+                        send(
                                 lookupRepository.findBooking(
                                         bookingId,
                                         parts[2].trim()
@@ -120,11 +159,11 @@ public class ClientHandler extends Thread {
 
                     } catch (NumberFormatException e) {
 
-                        output.println("INVALID_BOOKING_REQUEST");
+                        send("INVALID_BOOKING_REQUEST");
 
                     } catch (SQLException e) {
 
-                        output.println("DATABASE_ERROR");
+                        send("DATABASE_ERROR");
                     }
 
                 } else if (message.startsWith("CANCEL_BOOKING:")) {
@@ -135,7 +174,7 @@ public class ClientHandler extends Thread {
                             parts[2].isBlank() ||
                             parts[2].length() > 100) {
 
-                        output.println("INVALID_CANCEL_REQUEST");
+                        send("INVALID_CANCEL_REQUEST");
                         continue;
                     }
 
@@ -145,7 +184,7 @@ public class ClientHandler extends Thread {
                                 Integer.parseInt(parts[1]);
 
                         if (bookingId <= 0) {
-                            output.println("INVALID_CANCEL_REQUEST");
+                            send("INVALID_CANCEL_REQUEST");
                             continue;
                         }
 
@@ -157,7 +196,7 @@ public class ClientHandler extends Thread {
                                             parts[2].trim()
                                     );
 
-                            output.println(reply);
+                            send(reply);
 
                             if (reply.startsWith("CANCEL_SUCCESS:")) {
 
@@ -178,7 +217,7 @@ public class ClientHandler extends Thread {
 
                     } catch (NumberFormatException e) {
 
-                        output.println("INVALID_CANCEL_REQUEST");
+                        send("INVALID_CANCEL_REQUEST");
                     }
 
                 } else if (message.toUpperCase(Locale.ROOT)
@@ -211,7 +250,7 @@ public class ClientHandler extends Thread {
 
                     } else {
 
-                        output.println("INVALID_BOOKING_REQUEST");
+                        send("INVALID_BOOKING_REQUEST");
                         continue;
                     }
 
@@ -221,7 +260,7 @@ public class ClientHandler extends Thread {
                             customerName.length() > 100 ||
                             customerName.contains(":")) {
 
-                        output.println("INVALID_BOOKING_REQUEST");
+                        send("INVALID_BOOKING_REQUEST");
                         continue;
                     }
 
@@ -230,7 +269,7 @@ public class ClientHandler extends Thread {
                         String reply = eventManager.bookSeat(
                                 eventId,
                                 seatNumber,
-                                customerName
+                                customerName, this
                         );
 
                         if (reply.startsWith("BOOKING_SUCCESS:")) {
@@ -239,7 +278,7 @@ public class ClientHandler extends Thread {
 
                             if (result.length == 3) {
 
-                                output.println(
+                                send(
                                         "BOOKING_SUCCESS:"
                                                 + eventId + ":"
                                                 + seatNumber + ":"
@@ -256,26 +295,28 @@ public class ClientHandler extends Thread {
 
                             } else {
 
-                                output.println("DATABASE_ERROR");
+                                send("DATABASE_ERROR");
                             }
 
                         } else if (reply.startsWith("ALREADY_BOOKED:")) {
 
-                            output.println(
+                            send(
                                     "ALREADY_BOOKED:"
                                             + eventId + ":"
                                             + seatNumber
                             );
+                            broadcastToEvent(eventId,
+                                    "SEAT_UPDATE:" + eventId + ":" + seatNumber + ":BOOKED");
 
                         } else {
 
-                            output.println(reply);
+                            send(reply);
                         }
                     }
 
                 } else {
 
-                    output.println("UNKNOWN_COMMAND");
+                    send("UNKNOWN_COMMAND");
                 }
             }
 
@@ -288,6 +329,7 @@ public class ClientHandler extends Thread {
         } finally {
 
             clients.remove(this);
+            eventManager.releaseOwner(this);
             writer = null;
             subscribedEventId = null;
 
@@ -298,7 +340,7 @@ public class ClientHandler extends Thread {
         }
     }
 
-    private static void broadcastToEvent(
+    static void broadcastToEvent(
             String eventId,
             String message
     ) {
@@ -310,7 +352,7 @@ public class ClientHandler extends Thread {
             if (clientWriter != null &&
                     eventId.equals(client.subscribedEventId)) {
 
-                clientWriter.println(message);
+                client.send(message);
             }
         }
     }
