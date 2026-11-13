@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 public class EventManager implements AutoCloseable {
+    final HeartbeatManager heartbeat;
     private final SeatHoldManager holds = new SeatHoldManager(this);
 
     private final Map<String, Event> events;
@@ -30,12 +31,19 @@ public class EventManager implements AutoCloseable {
                         " (" + event.getSeats().size() + " seats)");
             }
         } catch (SQLException e) {
+            holds.close();
             throw new IllegalStateException("Failed to load events from MySQL.", e);
         }
+        heartbeat = new HeartbeatManager();
     }
 
     // In-memory event fixture for the socket regression runner; production uses MySQL above.
     EventManager(Map<String, Event> testEvents) {
+        this(testEvents, new HeartbeatManager());
+    }
+
+    EventManager(Map<String, Event> testEvents, HeartbeatManager heartbeat) {
+        this.heartbeat = heartbeat;
         events = new LinkedHashMap<>(testEvents);
     }
 
@@ -167,5 +175,5 @@ public class EventManager implements AutoCloseable {
         ClientHandler.broadcastToEvent(event, "SEAT_UPDATE:" + event + ":" + seat + ":" + status);
     }
 
-    @Override public synchronized void close() { holds.close(); }
+    @Override public void close() { heartbeat.close(); synchronized (this) { holds.close(); } }
 }

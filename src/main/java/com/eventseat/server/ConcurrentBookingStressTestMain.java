@@ -110,7 +110,7 @@ public class ConcurrentBookingStressTestMain {
                     }
 
                     // Receive response
-                    String response = reader.readLine();
+                    String response = TcpTestClient.readApplicationLine(reader, writer);
 
                     if (response == null) {
 

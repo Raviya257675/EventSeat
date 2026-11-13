@@ -46,7 +46,11 @@ public class EventSeatApp extends Application {
     private volatile boolean shuttingDown = false;
 
     private Label connectionStatusLabel;
+    private Label networkStatusLabel;
+    private long networkLatency = -1;
+    private int onlineClients = -1;
     private Button reconnectButton;
+    private Button findBookingButton;
 
     private VBox eventsContainer;
     private GridPane seatGrid;
@@ -119,11 +123,7 @@ public class EventSeatApp extends Application {
         stage = primaryStage;
         holdClock.setCycleCount(javafx.animation.Animation.INDEFINITE);
 
-        serverConnection = new ServerConnection(
-                message -> Platform.runLater(
-                        () -> handleServerMessage(message)
-                )
-        );
+        serverConnection = new ServerConnection(this::enqueueServerMessage);
 
         showHomeScreen();
 
@@ -153,6 +153,7 @@ public class EventSeatApp extends Application {
     private HBox createConnectionBar() {
 
         connectionStatusLabel = new Label();
+        networkStatusLabel = new Label();
 
         reconnectButton = new Button("Reconnect");
 
@@ -162,7 +163,7 @@ public class EventSeatApp extends Application {
 
         HBox bar = new HBox(
                 12,
-                connectionStatusLabel,
+                new VBox(3, connectionStatusLabel, networkStatusLabel),
                 reconnectButton
         );
 
@@ -175,6 +176,7 @@ public class EventSeatApp extends Application {
 
     private void updateConnectionBar() {
 
+        if (findBookingButton != null) findBookingButton.setDisable(!isConnected());
         if (connectionStatusLabel == null ||
                 reconnectButton == null) {
             return;
@@ -211,6 +213,11 @@ public class EventSeatApp extends Application {
             );
         }
 
+        if (networkStatusLabel != null) networkStatusLabel.setText(isConnected()
+                ? "Online Clients: " + (onlineClients < 0 ? "Waiting..." : onlineClients)
+                    + " | Network Latency: " + (networkLatency < 0 ? "Measuring..." : networkLatency + " ms")
+                    + "\nHeartbeat: " + (networkLatency < 0 ? "Waiting for heartbeat" : "Monitoring")
+                : "Online Clients: ? | Network Latency: ?\nHeartbeat: Connection lost");
         reconnectButton.setDisable(
                 connecting.get() || isConnected()
         );
@@ -228,6 +235,8 @@ public class EventSeatApp extends Application {
             return;
         }
 
+        networkLatency = -1;
+        onlineClients = -1;
         updateConnectionBar();
 
         Thread worker = new Thread(() -> {
@@ -399,10 +408,12 @@ public class EventSeatApp extends Application {
                 button -> button.setDisable(true)
         );
 
-        showConnectionNotice(
-                "Server disconnected. " +
-                        "Click Reconnect after restarting it."
-        );
+        String notice = "Server disconnected. Click Reconnect after restarting it.";
+        if ("LOOKUP".equals(currentScreen) && bookingLookupResultArea != null
+                && !bookingLookupResultArea.getText().isBlank()) {
+            // Keep an already-received cancellation/lookup result visible after EOF.
+            bookingLookupResultArea.appendText("\n\n" + notice);
+        } else showConnectionNotice(notice);
     }
 
     // -----------------------------------------
@@ -989,6 +1000,8 @@ public class EventSeatApp extends Application {
         Button findButton =
                 new Button("Find Booking");
 
+        findBookingButton = findButton;
+        findButton.setDisable(!isConnected());
         findButton.setOnAction(action -> {
 
             String bookingId =
@@ -1143,8 +1156,27 @@ public class EventSeatApp extends Application {
     // HANDLE SERVER MESSAGES
     // -----------------------------------------
 
+    // Package-visible so the regression runner exercises the actual FX dispatch path.
+    void enqueueServerMessage(String message) {
+        long generation = serverConnection.connectionGeneration();
+        Platform.runLater(() -> {
+            if (!shuttingDown && generation == serverConnection.connectionGeneration()) handleServerMessage(message);
+        });
+    }
+
     private void handleServerMessage(String message) {
 
+        if (message.startsWith("CLIENT_STATS:") || message.startsWith("LATENCY:")) {
+            if (!isConnected()) return;
+            try {
+                long value = Long.parseLong(message.substring(message.indexOf(':') + 1));
+                if (value < 0) return;
+                if (message.startsWith("LATENCY:")) networkLatency = value;
+                else onlineClients = Math.toIntExact(value);
+                updateConnectionBar();
+            } catch (IllegalArgumentException | ArithmeticException ignored) { }
+            return;
+        }
         System.out.println("Server: " + message);
 
         // CONNECTION LOST
