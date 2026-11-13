@@ -8,40 +8,8 @@ import java.util.*;
 
 /** Actual TCP tests. --embedded uses isolated events, never database bookings. */
 public final class SeatHoldTestMain {
-    private static final class Client implements AutoCloseable {
-        final Socket socket;
-        final BufferedReader reader;
-        final PrintWriter writer;
-        final List<String> updates = new ArrayList<>();
-        Client(String host, int port) throws IOException {
-            socket = new Socket();
-            socket.connect(new InetSocketAddress(host, port), 3000);
-            socket.setSoTimeout(5000);
-            reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-            writer = new PrintWriter(socket.getOutputStream(), true);
-        }
-        String request(String command) throws IOException {
-            writer.println(command);
-            while (true) {
-                String line = reader.readLine();
-                if (line == null) throw new EOFException(command);
-                if (line.startsWith("SEAT_UPDATE:")) updates.add(line);
-                else return line;
-            }
-        }
-        void update(String expected, int timeout) throws IOException {
-            socket.setSoTimeout(timeout);
-            try {
-                if (updates.remove(expected)) return;
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.equals(expected)) return;
-                    updates.add(line);
-                }
-                throw new AssertionError("Missing broadcast " + expected);
-            } finally { socket.setSoTimeout(5000); }
-        }
-        public void close() throws IOException { socket.close(); }
+    private static final class Client extends TcpTestClient {
+        Client(String host, int port) throws IOException { super(host, port); }
     }
 
     private static void check(boolean condition, String name) {

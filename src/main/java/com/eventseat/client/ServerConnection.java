@@ -12,11 +12,16 @@ import java.util.function.Consumer;
 public class ServerConnection {
 
     private final java.util.concurrent.ExecutorService sender =
-            java.util.concurrent.Executors.newSingleThreadExecutor(task -> {
+            new java.util.concurrent.ThreadPoolExecutor(0, 1, 1,
+                    java.util.concurrent.TimeUnit.SECONDS,
+                    new java.util.concurrent.ArrayBlockingQueue<>(512), task -> {
                 Thread thread = new Thread(task, "eventseat-sender");
                 thread.setDaemon(true);
                 return thread;
             });
+    // Identity changes only when a replacement connection is installed, never on EOF.
+    private volatile long generation;
+    public long connectionGeneration() { return generation; }
     private Socket socket;
     private PrintWriter writer;
 
@@ -74,6 +79,8 @@ public class ServerConnection {
 
             synchronized (lock) {
 
+                if (connected) { newSocket.close(); return; }
+                generation++;
                 socket = newSocket;
                 writer = newWriter;
 
@@ -121,7 +128,9 @@ public class ServerConnection {
 
                 synchronized (lock) {
                     if (socket != activeSocket) return;
-                    messageHandler.accept(message);
+                    if (message.startsWith("PING:")) {
+                        if (message.length() > 5) send("PONG:" + message.substring(5));
+                    } else messageHandler.accept(message);
                 }
             }
 
@@ -159,6 +168,7 @@ public class ServerConnection {
             connected = false;
             writer = null;
             socket = null;
+            if (notifyClient) messageHandler.accept("CONNECTION_ERROR:Server disconnected");
         }
 
         try {
@@ -166,16 +176,7 @@ public class ServerConnection {
         } catch (IOException ignored) {
         }
 
-        if (notifyClient) {
 
-            System.out.println(
-                    "Lost connection to EventSeat server."
-            );
-
-            messageHandler.accept(
-                    "CONNECTION_ERROR:Server disconnected"
-            );
-        }
     }
 
     // -----------------------------------------
@@ -204,13 +205,16 @@ public class ServerConnection {
             activeWriter = writer;
         }
 
-        sender.execute(() -> {
+        try { sender.execute(() -> {
             synchronized (lock) {
                 if (socket != activeSocket) return;
             }
             activeWriter.println(message);
             if (activeWriter.checkError()) handleDisconnection(activeSocket);
-        });
+        }); } catch (java.util.concurrent.RejectedExecutionException e) {
+            handleDisconnection(activeSocket);
+            return false;
+        }
         return true;
     }
 
