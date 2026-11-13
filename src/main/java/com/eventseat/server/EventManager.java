@@ -10,7 +10,8 @@ import java.sql.SQLException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-public class EventManager {
+public class EventManager implements AutoCloseable {
+    private final SeatHoldManager holds = new SeatHoldManager(this);
 
     private final Map<String, Event> events;
     private final BookingRepository bookingRepository = new BookingRepository();
@@ -31,6 +32,11 @@ public class EventManager {
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to load events from MySQL.", e);
         }
+    }
+
+    // In-memory event fixture for the socket regression runner; production uses MySQL above.
+    EventManager(Map<String, Event> testEvents) {
+        events = new LinkedHashMap<>(testEvents);
     }
 
     public synchronized boolean hasEvent(String eventId) {
@@ -56,7 +62,7 @@ public class EventManager {
         StringBuilder reply = new StringBuilder("SEATS:").append(eventId).append(":");
         for (Seat seat : event.getSeats()) {
             reply.append(seat.getSeatNumber()).append("=")
-                    .append(seat.isBooked() ? "BOOKED" : "AVAILABLE").append(",");
+                    .append(seat.isBooked() ? "BOOKED" : holds.get(eventId, seat.getSeatNumber()) != null ? "HELD" : "AVAILABLE").append(",");
         }
         return reply.toString();
     }
@@ -69,6 +75,10 @@ public class EventManager {
     public synchronized String bookSeat(
             String eventId, String seatNumber, String customerName) {
 
+        return bookSeat(eventId, seatNumber, customerName, null);
+    }
+
+    public synchronized String bookSeat(String eventId, String seatNumber, String customerName, Object owner) {
         Event event = events.get(eventId);
         if (event == null) return "EVENT_NOT_FOUND";
 
@@ -78,6 +88,8 @@ public class EventManager {
                 customerName.length() > 100 || customerName.contains(":")) {
             return "INVALID_CUSTOMER_NAME";
         }
+        SeatHoldManager.Hold hold = holds.get(eventId, seatNumber);
+        if (hold != null && hold.owner() != owner) return "BOOKING_FAILED:HELD";
         if (seat.isBooked()) return "ALREADY_BOOKED:" + seatNumber;
 
         try {
@@ -87,6 +99,7 @@ public class EventManager {
             if (reply.startsWith("BOOKING_SUCCESS:") ||
                     reply.startsWith("ALREADY_BOOKED:")) {
                 seat.setBooked(true);
+                holds.remove(eventId, seatNumber);
             }
             return reply;
         } catch (SQLException e) {
@@ -114,4 +127,45 @@ public class EventManager {
             return "DATABASE_ERROR";
         }
     }
+
+    public synchronized String holdSeat(String eventId, String seatNumber, Object owner) {
+        Event event = events.get(eventId);
+        if (event == null) return "HOLD_DENIED:" + eventId + ":" + seatNumber + ":EVENT_NOT_FOUND";
+        Seat seat = event.findSeat(seatNumber);
+        if (seat == null) return "HOLD_DENIED:" + eventId + ":" + seatNumber + ":SEAT_NOT_FOUND";
+        seatNumber = seat.getSeatNumber();
+        String prefix = eventId + ":" + seatNumber;
+        if (seat.isBooked()) return "HOLD_DENIED:" + prefix + ":BOOKED";
+        SeatHoldManager.Hold previous = holds.get(eventId, seatNumber);
+        if (previous != null && previous.owner() != owner) return "HOLD_DENIED:" + prefix + ":HELD";
+        if (previous == null) {
+            holds.releaseOwner(owner);
+            previous = holds.create(eventId, seatNumber, owner);
+            broadcast(eventId, seatNumber, "HELD");
+        }
+        return "HOLD_SUCCESS:" + prefix + ":" + previous.expiresAt();
+    }
+
+    public synchronized String releaseSeat(String eventId, String seatNumber, Object owner) {
+        Event event = events.get(eventId);
+        if (event == null) return "EVENT_NOT_FOUND";
+        Seat seat = event.findSeat(seatNumber);
+        if (seat == null) return "SEAT_NOT_FOUND";
+        seatNumber = seat.getSeatNumber();
+        SeatHoldManager.Hold hold = holds.get(eventId, seatNumber);
+        if (hold != null && hold.owner() != owner) return "RELEASE_DENIED:" + eventId + ":" + seatNumber;
+        if (hold != null) {
+            holds.remove(eventId, seatNumber);
+            broadcast(eventId, seatNumber, "AVAILABLE");
+        }
+        return "RELEASE_SUCCESS:" + eventId + ":" + seatNumber;
+    }
+
+    public synchronized void releaseOwner(Object owner) { holds.releaseOwner(owner); }
+
+    void broadcast(String event, String seat, String status) {
+        ClientHandler.broadcastToEvent(event, "SEAT_UPDATE:" + event + ":" + seat + ":" + status);
+    }
+
+    @Override public synchronized void close() { holds.close(); }
 }

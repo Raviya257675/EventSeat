@@ -52,6 +52,44 @@ public class EventSeatApp extends Application {
     private GridPane seatGrid;
     private EventInfo selectedEvent;
     private String selectedSeat;
+    private boolean holdOwned;
+    private long holdExpiry;
+    private final java.util.ArrayDeque<String> holdRequests = new java.util.ArrayDeque<>();
+    private String desiredHold;
+    private final javafx.animation.Timeline holdClock = new javafx.animation.Timeline(
+            new javafx.animation.KeyFrame(javafx.util.Duration.millis(200), e -> tickHold()));
+
+    private void tickHold() {
+        if (!holdOwned) return;
+        long remaining = Math.max(0, (holdExpiry - System.currentTimeMillis() + 999) / 1000);
+        selectedSeatLabel.setText("Selected Seat: " + selectedSeat + " - " + remaining + "s remaining");
+        if (remaining == 0) {
+            clearHold("Hold expired. Select an available seat again.");
+        }
+    }
+
+    // Called only on the JavaFX thread, like all network-driven UI handlers.
+    private void clearHold(String status) {
+        desiredHold = null;
+        holdOwned = false;
+        holdExpiry = 0;
+        selectedSeat = null;
+        holdClock.stop();
+        if (selectedSeatLabel != null) selectedSeatLabel.setText("Selected Seat: None");
+        if (bookButton != null) bookButton.setDisable(true);
+        if (bookingStatusLabel != null) bookingStatusLabel.setText(status);
+    }
+
+    private void leaveSeats() {
+        if ("SEATS".equals(currentScreen) && isConnected()) serverConnection.send("LEAVE_SEATS");
+        clearHold("");
+    }
+
+    private boolean canBook() {
+        return holdOwned && selectedSeat != null && System.currentTimeMillis() < holdExpiry
+                && isConnected() && !bookingPending;
+    }
+
     private Label selectedSeatLabel;
     private Label bookingStatusLabel;
     private Button bookButton;
@@ -79,6 +117,7 @@ public class EventSeatApp extends Application {
     public void start(Stage primaryStage) {
 
         stage = primaryStage;
+        holdClock.setCycleCount(javafx.animation.Animation.INDEFINITE);
 
         serverConnection = new ServerConnection(
                 message -> Platform.runLater(
@@ -338,6 +377,8 @@ public class EventSeatApp extends Application {
     // -----------------------------------------
 
     private void onConnectionLost() {
+        clearHold("Server disconnected. Click Reconnect after restarting it.");
+        holdRequests.clear();
 
         updateConnectionBar();
 
@@ -369,6 +410,7 @@ public class EventSeatApp extends Application {
     // -----------------------------------------
 
     private void showHomeScreen() {
+        leaveSeats();
 
         currentScreen = "HOME";
         selectedEvent = null;
@@ -428,6 +470,7 @@ public class EventSeatApp extends Application {
     // -----------------------------------------
 
     private void showEventsListScreen() {
+        leaveSeats();
 
         currentScreen = "EVENTS";
         selectedEvent = null;
@@ -562,6 +605,7 @@ public class EventSeatApp extends Application {
     // -----------------------------------------
 
     private void showEventScreen(EventInfo event) {
+        leaveSeats();
 
         currentScreen = "SEATS";
         selectedEvent = event;
@@ -621,7 +665,7 @@ public class EventSeatApp extends Application {
                 new Button("Book Selected Seat");
 
         bookButton.setDisable(
-                bookingPending || !isConnected()
+                !canBook()
         );
 
         bookButton.setOnAction(action -> {
@@ -630,7 +674,7 @@ public class EventSeatApp extends Application {
                 return;
             }
 
-            if (selectedSeat == null) {
+            if (!canBook()) {
 
                 bookingStatusLabel.setText(
                         "Please select a seat first."
@@ -706,7 +750,7 @@ public class EventSeatApp extends Application {
                 stageLabel,
                 seatGrid,
                 new Label(
-                        "Green = Available     Red = Booked"
+                        "Green = Available     Yellow = Held     Red = Booked"
                 ),
                 selectedSeatLabel,
                 new Label("Customer Name:"),
@@ -783,7 +827,7 @@ public class EventSeatApp extends Application {
 
             updateSeat(
                     seatNumber,
-                    "BOOKED".equalsIgnoreCase(parts[1])
+                    parts[1]
             );
 
             index++;
@@ -792,7 +836,7 @@ public class EventSeatApp extends Application {
         if (bookButton != null) {
 
             bookButton.setDisable(
-                    bookingPending || !isConnected()
+                    !canBook()
             );
         }
 
@@ -837,13 +881,16 @@ public class EventSeatApp extends Application {
 
         button.setOnAction(action -> {
 
+            if (bookingPending || !isConnected()) return;
+            if (selectedSeat != null) serverConnection.send("RELEASE:" + selectedEvent.id + ":" + selectedSeat);
+            clearHold("Requesting hold: " + seatNumber);
             selectedSeat = seatNumber;
+            desiredHold = selectedEvent.id + ":" + seatNumber;
+            holdRequests.add(desiredHold);
+            bookButton.setDisable(true);
+            selectedSeatLabel.setText("Requesting hold: " + seatNumber);
+            serverConnection.send("HOLD:" + desiredHold);
 
-            selectedSeatLabel.setText(
-                    "Selected Seat: " + seatNumber
-            );
-
-            bookingStatusLabel.setText("");
         });
 
         return button;
@@ -867,43 +914,20 @@ public class EventSeatApp extends Application {
     // UPDATE ONE SEAT
     // -----------------------------------------
 
-    private void updateSeat(
-            String seatNumber,
-            boolean booked
-    ) {
-
-        Button button =
-                seatButtons.get(seatNumber);
-
-        if (button == null) {
-            return;
+    private void updateSeat(String seatNumber, String status) {
+        Button button = seatButtons.get(seatNumber);
+        if (button == null) return;
+        boolean owned = seatNumber.equals(selectedSeat) && holdOwned;
+        button.setStyle("-fx-background-color: " + ("BOOKED".equals(status) ? "lightcoral"
+                : "HELD".equals(status) ? "gold" : "lightgreen") + ";-fx-font-weight: bold;");
+        button.setDisable(!isConnected() || !"AVAILABLE".equals(status));
+        if (owned && !"HELD".equals(status)) {
+            clearHold("BOOKED".equals(status) ? "Seat is booked."
+                    : System.currentTimeMillis() >= holdExpiry
+                    ? "Hold expired. Select an available seat again."
+                    : "Hold released. Select an available seat again.");
         }
-
-        if (booked) {
-
-            button.setDisable(true);
-
-            button.setStyle(
-                    "-fx-background-color: lightcoral;" +
-                            "-fx-font-weight: bold;"
-            );
-
-            if (seatNumber.equals(selectedSeat)) {
-
-                selectedSeat = null;
-
-                if (selectedSeatLabel != null) {
-
-                    selectedSeatLabel.setText(
-                            "Selected Seat: None"
-                    );
-                }
-            }
-
-        } else {
-
-            setSeatAvailable(button);
-        }
+        if (bookButton != null) bookButton.setDisable(!canBook());
     }
 
     // -----------------------------------------
@@ -911,6 +935,7 @@ public class EventSeatApp extends Application {
     // -----------------------------------------
 
     private void showBookingLookupScreen() {
+        leaveSeats();
 
         currentScreen = "LOOKUP";
         selectedEvent = null;
@@ -1132,6 +1157,35 @@ public class EventSeatApp extends Application {
             return;
         }
 
+        if (message.startsWith("HOLD_SUCCESS:") || message.startsWith("HOLD_DENIED:")) {
+            String request = holdRequests.poll();
+            String[] parts = message.split(":", 4);
+            if (parts.length != 4 || request == null) return;
+            // TCP replies are ordered. Only the last outstanding selection may become owned.
+            if (!holdRequests.isEmpty() || !request.equals(desiredHold)
+                    || !"SEATS".equals(currentScreen)) return;
+            if (message.startsWith("HOLD_SUCCESS:")) {
+                holdOwned = true;
+                holdExpiry = Long.parseLong(parts[3]);
+                updateSeat(parts[2], "HELD");
+                holdClock.play();
+                bookingStatusLabel.setText("Seat held for you. Confirm before the timer expires.");
+                tickHold();
+            } else {
+                clearHold("Hold denied: " + parts[3]);
+            }
+            return;
+        }
+
+        if (message.startsWith("RELEASE_SUCCESS:")) {
+            String[] parts = message.split(":", 3);
+            if (parts.length == 3 && "SEATS".equals(currentScreen) && selectedEvent != null
+                    && selectedEvent.id.equals(parts[1]) && parts[2].equals(selectedSeat) && holdOwned) {
+                clearHold("Hold released. Select an available seat again.");
+            }
+            return;
+        }
+
         // EVENTS
         if (message.startsWith("EVENTS:")) {
 
@@ -1170,7 +1224,7 @@ public class EventSeatApp extends Application {
 
                 updateSeat(
                         parts[2],
-                        "BOOKED".equalsIgnoreCase(parts[3])
+                        parts[3]
                 );
             }
 
@@ -1179,36 +1233,39 @@ public class EventSeatApp extends Application {
         // BOOKING SUCCESS
         else if (message.startsWith("BOOKING_SUCCESS:")) {
 
-            String[] parts =
-                    message.split(":", 4);
+            BookingSuccess booking;
+            try {
+                booking = parseBookingSuccess(message);
+            } catch (IllegalArgumentException e) {
+                bookingPending = false;
+                clearHold("Invalid booking confirmation. Check Find My Booking before retrying.");
+                return;
+            }
 
             bookingPending = false;
 
             if (bookButton != null) {
-                bookButton.setDisable(false);
+                bookButton.setDisable(!canBook());
             }
 
-            if (parts.length == 4) {
+            if ("SEATS".equals(currentScreen) &&
+                    selectedEvent != null &&
+                    selectedEvent.id.equals(booking.eventId())) {
 
-                if ("SEATS".equals(currentScreen) &&
-                        selectedEvent != null &&
-                        selectedEvent.id.equals(parts[1])) {
+                updateSeat(booking.seatNumber(), "BOOKED");
 
-                    updateSeat(parts[2], true);
-
-                    bookingStatusLabel.setText(
-                            "Booking successful: " + parts[2]
-                    );
-                }
-
-                showBookingConfirmation(
-                        parts[3],
-                        parts[2],
-                        pendingCustomerName,
-                        pendingEvent
+                bookingStatusLabel.setText(
+                        "Booking successful: " + booking.seatNumber()
                 );
             }
 
+            showBookingConfirmation(
+                    booking.bookingId(),
+                    booking.bookingTime(),
+                    booking.seatNumber(),
+                    pendingCustomerName,
+                    pendingEvent
+            );
         }
 
         // ALREADY BOOKED
@@ -1217,7 +1274,7 @@ public class EventSeatApp extends Application {
             bookingPending = false;
 
             if (bookButton != null) {
-                bookButton.setDisable(false);
+                bookButton.setDisable(!canBook());
             }
 
             String[] parts =
@@ -1228,7 +1285,7 @@ public class EventSeatApp extends Application {
                     selectedEvent != null &&
                     selectedEvent.id.equals(parts[1])) {
 
-                updateSeat(parts[2], true);
+                updateSeat(parts[2], "BOOKED");
 
                 bookingStatusLabel.setText(
                         "Seat " + parts[2] +
@@ -1244,7 +1301,7 @@ public class EventSeatApp extends Application {
             bookingPending = false;
 
             if (bookButton != null) {
-                bookButton.setDisable(false);
+                bookButton.setDisable(!canBook());
             }
 
             if ("SEATS".equals(currentScreen) &&
@@ -1284,7 +1341,7 @@ public class EventSeatApp extends Application {
                         selectedEvent != null &&
                         selectedEvent.id.equals(parts[2])) {
 
-                    updateSeat(parts[3], false);
+                    updateSeat(parts[3], "AVAILABLE");
                 }
             }
 
@@ -1368,7 +1425,7 @@ public class EventSeatApp extends Application {
             bookingPending = false;
 
             if (bookButton != null) {
-                bookButton.setDisable(false);
+                bookButton.setDisable(!canBook());
             }
 
             if ("LOOKUP".equals(currentScreen) &&
@@ -1401,8 +1458,22 @@ public class EventSeatApp extends Application {
     // BOOKING CONFIRMATION
     // -----------------------------------------
 
+    record BookingSuccess(String eventId, String seatNumber, String bookingId, String bookingTime) { }
+
+    static BookingSuccess parseBookingSuccess(String message) {
+        // Limit the split: the final timestamp itself contains colons.
+        // Older responses without a timestamp still contain four fields.
+        String[] parts = message.split(":", 5);
+        if (parts.length < 4 || !"BOOKING_SUCCESS".equals(parts[0])
+                || parts[1].isBlank() || parts[2].isBlank() || !parts[3].matches("[1-9][0-9]*")) {
+            throw new IllegalArgumentException("Malformed booking confirmation");
+        }
+        return new BookingSuccess(parts[1], parts[2], parts[3], parts.length == 5 ? parts[4] : "");
+    }
+
     private void showBookingConfirmation(
             String bookingId,
+            String bookingTime,
             String seatNumber,
             String customerName,
             EventInfo event
@@ -1421,7 +1492,8 @@ public class EventSeatApp extends Application {
         );
 
         alert.setContentText(
-                "Booking ID: #" + bookingId + "\n\n" +
+                "Booking ID: #" + bookingId + "\n" +
+                        (bookingTime.isBlank() ? "" : "Booking Time: " + bookingTime + "\n") + "\n" +
                         "Customer: " + customerName + "\n" +
                         "Event: " +
                         (event == null ? "Unknown" : event.name) + "\n" +
