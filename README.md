@@ -2,6 +2,24 @@
 
 **EventSeat** is a Java-based network application designed to provide real-time seat booking for concerts and events.
 
+## Current client options
+
+- [React web integration, architecture and Windows run commands](WEB_INTEGRATION.md)
+- [Executed integration checks and remaining limits](WEB_VALIDATION.md)
+- [JavaFX LAN demonstration](LAN_DEMO.md)
+- [Portable Windows JavaFX client](PORTABLE_CLIENT.md)
+
+The browser uses HTTP/WebSocket on port 8080. A local Node gateway gives each
+browser its own persistent TCP connection to the existing Java server on port
+5000. Java and MySQL remain authoritative. The JavaFX architecture below still
+applies. Use JDK 27 with the current JavaFX dependencies; the Java source target
+remains 25. Node.js 24/npm are required only on the web server laptop.
+
+The historical roadmap below predates the current implementation: multiple-event
+selection, numeric booking IDs, timestamps, lookup, cancellation, reconnect,
+60-second owned holds and heartbeat monitoring are now implemented. Consult
+WEB_VALIDATION.md for actual checks rather than treating roadmap entries as test results.
+
 The system uses TCP Socket Programming to establish communication between multiple clients and a central server. When a client successfully books a seat, the server updates the MySQL database and broadcasts the seat status to all connected clients.
 
 The project demonstrates practical networking concepts, multithreading, real-time communication, database integration, and JavaFX GUI development.
@@ -60,7 +78,7 @@ The following features have been implemented:
 
 | Technology | Purpose |
 |---|---|
-| Java 25 | Core programming language |
+| JDK 27 (Java 25 source target) | Core programming language |
 | JavaFX | Desktop GUI |
 | TCP Socket Programming | Network communication |
 | Multithreading | Concurrent client handling |
@@ -190,7 +208,7 @@ Stores customer booking records.
 
 Make sure you have installed:
 
-- JDK 25
+- JDK 27
 - Apache Maven
 - MySQL Server
 - MySQL Workbench
@@ -244,6 +262,7 @@ CREATE TABLE bookings (
     seat_number VARCHAR(10) NOT NULL,
     customer_name VARCHAR(100),
     booking_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
     FOREIGN KEY (event_id) REFERENCES events(event_id)
 );
 ```

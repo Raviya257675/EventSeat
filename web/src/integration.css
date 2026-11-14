@@ -1,0 +1,13 @@
+.connection-bar { display:flex; flex-wrap:wrap; align-items:center; gap:12px 24px; padding-top:14px; padding-bottom:14px; color:#b6aec6; font-size:12px; }
+.connection-bar .button { padding:7px 15px; min-height:32px; }
+.legend-held { background:#d69a38; }
+.seat.held { background:#705021; border-color:#d69a38; color:#ffe1a4; }
+.seat.chosen { background:#a78bfa; border-color:#c4b5fd; color:#171021; }
+.live-seat-row { display:flex; flex-wrap:wrap; justify-content:center; gap:10px; }
+.live-seat-row .seat { min-width:42px; width:auto; padding:5px; }
+.connection-bar + main { min-height:65vh; }
+.hero-feature > span:first-child { display:grid; gap:4px; }
+.hero-feature > span:first-child small { display:block; font-size:10px; letter-spacing:1px; color:#b8adc9; }
+.hero-feature > span:first-child strong { display:block; }
+.hero-feature > svg { flex-shrink:0; }
+@media (max-width:600px) { .connection-bar { gap:8px 16px; } .header-booking { font-size:11px; } }
