@@ -1,0 +1,7 @@
+@media print {
+  body { background: white !important; }
+  body * { visibility: hidden; }
+  .digital-ticket, .digital-ticket * { visibility: visible; }
+  .digital-ticket { position: absolute; top: 25mm; left: 50%; width: 150mm; transform: translateX(-50%); box-shadow: none !important; border: 1px solid #ddd; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  .ticket-stub::before, .ticket-stub::after { background: white !important; }
+}
