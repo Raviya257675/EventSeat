@@ -27,6 +27,7 @@ target/
 ### NetBeans ###
 /nbproject/private/
 /nbbuild/
+# Portable jpackage application images (intermediates are under target/).
 /dist/
 /nbdist/
 /.nb-gradle/
@@ -39,3 +40,16 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+# Web dependencies, generated assets and local configuration
+**/node_modules/
+/web/dist/
+/web/.vite/
+/web/test-results/
+/web/playwright-report/
+*.tsbuildinfo
+*.zip
+.env
+.env.*
+!.env.example
+/.playwright-mcp/

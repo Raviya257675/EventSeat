@@ -246,7 +246,7 @@ public class EventSeatApp extends Application {
             try {
 
                 serverConnection.connect(
-                        "localhost",
+                        ClientConfiguration.serverHost(),
                         5000
                 );
 
